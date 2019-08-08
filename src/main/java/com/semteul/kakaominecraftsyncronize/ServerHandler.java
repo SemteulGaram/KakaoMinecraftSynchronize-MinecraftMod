@@ -2,18 +2,20 @@ package com.semteul.kakaominecraftsyncronize;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
-import org.apache.commons.io.IOUtils;
-import org.apache.commons.io.output.WriterOutputStream;
-import org.apache.commons.lang3.CharSet;
+
+import net.minecraft.util.text.TextFormatting;
+
 import org.apache.logging.log4j.Logger;
-import org.apache.logging.log4j.core.util.JsonUtils;
 
 import java.io.*;
+import java.net.ConnectException;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -25,10 +27,12 @@ class ServerHandler {
     private final String cUrl;
     private final String uUrl;
     private final String mUrl;
+    private final int MAX_ERROR_COUNT = 5;
+    private final int MAX_SEND_QUEUE = 4;
 
     private boolean connect = false;
     private int errorCount = 0;
-    private boolean wasWrongResponse = false;
+    private LinkedList<String> sendQueue = new LinkedList<String>();
 
     ServerHandler (KakaoMinecraftSynchronize ctx) {
         this.logger = ctx.logger;
@@ -37,26 +41,58 @@ class ServerHandler {
         this.uUrl = ConfigManager.KakaoMinecraftSynchronizeConfig.serverOrigin + "/m/u";
         this.mUrl = ConfigManager.KakaoMinecraftSynchronizeConfig.serverOrigin + "/m/m";
 
-        SERVICE.execute(new InternalLooper(this.ctx, ConfigManager.KakaoMinecraftSynchronizeConfig.interval));
+        SERVICE.execute(new InternalLooper(ConfigManager.KakaoMinecraftSynchronizeConfig.interval));
+    }
+    
+    void handleUnexpectedError(Exception err) {
+    	this.logger.error("========== UNEXPECTED ERROR OCCUR ==========");
+    	this.logger.error(err);
+    	this.errorCount++;
+    	if (this.isMaxErrorCountReach()) {
+    		this.logger.error("Unexpected error occur more then " 
+    				+ this.MAX_ERROR_COUNT + " times. Service disabled.");
+    	}
+    }
+    
+    void handleMalformedURLException(Exception err) {
+    	this.errorCount = this.MAX_ERROR_COUNT;
+    	this.logger.error("Malformed URL detected. Please change url in config (ex: http://example.com:3000)");
     }
 
     int getErrorCount() {
         return this.errorCount;
     }
-
-    boolean isConnect () {
-        return this.connect;
+    
+    boolean isMaxErrorCountReach() {
+    	return this.errorCount == this.MAX_ERROR_COUNT;
     }
 
-    void sendMessage (String msg) {
-        if (!this.connect) return;
+    boolean isReady() {
+        return KakaoMinecraftSynchronize.hasServer() && this.connect && !this.isMaxErrorCountReach();
+    }
 
+    void sendMessage(String msg) {
+        if (!this.isReady()) {
+        	// Queue messages instead of sending request
+        	this.sendQueue.add(msg);
+        	if (this.sendQueue.size() > this.MAX_SEND_QUEUE) {
+        		this.sendQueue.removeFirst();
+        	}
+        	return;
+        }
+
+        // send queued message first
+        // TODO: Suspect concurrency issues
+        if (this.sendQueue.size() != 0) this.sendQueuedMessages();
+        
+        // Create jsonObject
         JsonObject jsonObject = new JsonObject();
         JsonArray m = new JsonArray();
         m.add(msg);
         jsonObject.add("m", m);
 
         try {
+        	// Make request
             URL url = new URL(this.mUrl);
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setDoOutput(true);
@@ -64,124 +100,159 @@ class ServerHandler {
             connection.setRequestMethod("POST");
             connection.connect();
 
+            // Send message with encoding
             OutputStreamWriter osw = new OutputStreamWriter(connection.getOutputStream(), StandardCharsets.UTF_8);
             osw.write(jsonObject.toString());
             osw.close();
 
+            // Response check
             int responseCode = connection.getResponseCode();
             if (responseCode != 200) {
                 this.logger.warn("ServerHandler.sendMessage> get wrong responseCode: " + responseCode
                         + ", Reason:" +  connection.getResponseMessage());
             }
-        }catch (MalformedURLException err) {
-            this.logger.error("ServerHandler.sendMessage> send error");
-            this.logger.error(err);
+        } catch (MalformedURLException err) {
+            this.handleMalformedURLException(err);
         } catch (IOException err) {
-            this.logger.error("ServerHandler.sendMessage> send error");
-            this.logger.error(err);
+            if (err.getMessage().equals("Connection refused: connect")) {
+            	this.connect = false;
+            	return;
+            }
+            this.handleUnexpectedError(err);
+        }
+    }
+    
+    void sendQueuedMessages() {
+    	if (this.sendQueue.size() == 0) return;
+    	
+    	// Create jsonObject
+        JsonObject jsonObject = new JsonObject();
+        JsonArray m = new JsonArray();
+        while (!sendQueue.isEmpty()) m.add(sendQueue.pollFirst());
+        jsonObject.add("m", m);
+
+        try {
+        	// Make request
+            URL url = new URL(this.mUrl);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setDoOutput(true);
+            connection.setConnectTimeout(10000);
+            connection.setRequestMethod("POST");
+            connection.connect();
+
+            // Send message with encoding
+            OutputStreamWriter osw = new OutputStreamWriter(connection.getOutputStream(), StandardCharsets.UTF_8);
+            osw.write(jsonObject.toString());
+            osw.close();
+
+            // Response check
+            int responseCode = connection.getResponseCode();
+            if (responseCode != 200) {
+                this.logger.warn("ServerHandler.sendMessage> get wrong responseCode: " + responseCode
+                        + ", Reason:" +  connection.getResponseMessage());
+            }
+        } catch (MalformedURLException err) {
+            this.handleMalformedURLException(err);
+        } catch (IOException err) {
+            if (err.getMessage().equals("Connection refused: connect")) {
+            	this.connect = false;
+            	return;
+            }
+            this.handleUnexpectedError(err);
         }
     }
 
-    void doUpdate () {
+    void doUpdate() {
         try {
+        	// if last connection is connected
             if (this.connect) {
+            	// send queued message first
+            	// TODO: Suspect concurrency issues
+            	if (this.sendQueue.size() != 0) this.sendQueuedMessages();
+            	
+            	// Make request
                 URL url = new URL(this.uUrl);
                 HttpURLConnection connection = (HttpURLConnection) url.openConnection();
                 connection.setConnectTimeout(10000);
                 connection.setReadTimeout(10000);
-                connection.setDoOutput(true);
+                connection.setDoInput(true);
                 connection.setRequestMethod("GET");
-                connection.connect();
 
+                // Response code check
                 int responseCode = connection.getResponseCode();
                 if (responseCode == 204) {
                     // Blank response
                     return;
                 } else if (responseCode == 200) {
                     // Has update message
-                    this.logger.error("DEBUG TYPE: " + connection.getContent().getClass().getName());
-
-                    /*
-                    url = new URL(desiredUrl);
-      HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-
-      // just want to do an HTTP GET here
-      connection.setRequestMethod("GET");
-
-      // uncomment this if you want to write output to this url
-      //connection.setDoOutput(true);
-
-      // give it 15 seconds to respond
-      connection.setReadTimeout(15*1000);
-      connection.connect();
-
-      // read the output from the server
-      reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-      stringBuilder = new StringBuilder();
-
-      String line = null;
-      while ((line = reader.readLine()) != null)
-      {
-        stringBuilder.append(line + "\n");
-      }
-      return stringBuilder.toString();
-
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-                    StringBuilder stringBuilder = new StringBuilder();
-                    String line = null;
-                    while ((line = reader.readLine()) != null)
-                    {
-                        stringBuilder.append(line + "\n");
+                	// Get content with encoding
+                    InputStreamReader isr = new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8);
+                    BufferedReader br = new BufferedReader(isr);
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while((line = br.readLine()) != null) {
+                        sb.append(line).append("\n");
                     }
-                    String result = stringBuilder.toString();
-                    reader.close();
 
-                    JsonParser parser = new com.google.gson.JsonParser();
-            parser.parse()
-                     */
+                    // Parse json
+                    JsonParser parser = new JsonParser();
+                    JsonObject jsonObject = (JsonObject) parser.parse(sb.toString());
+                    JsonArray m = jsonObject.getAsJsonArray("m");
+                    int count = m.size();
+                    for (int i = 0; i < count; i++) {
+                        // TODO: change format
+                        this.ctx.sendMessageAll(TextFormatting.YELLOW + m.get(i).getAsString());
+                    }
                 } else {
-                    if (!this.wasWrongResponse) {
-                        this.wasWrongResponse = true;
-                        this.logger.error("DEBUG SERVER WRONG");
-                    }
+                	this.logger.warn("ServerHandler.doUpdate> get wrong responseCode: " + responseCode
+                            + ", Reason:" +  connection.getResponseMessage());
                 }
-                this.wasWrongResponse = false;
+            // if last connection isn't connected
             } else {
+            	// try connect request
                 URL url = new URL(this.cUrl);
                 HttpURLConnection connection = (HttpURLConnection) url.openConnection();
                 connection.setConnectTimeout(10000);
-                connection.setReadTimeout(10000);
                 connection.setRequestMethod("GET");
-                connection.connect();
-
-                this.connect = true;
+                
+                // Response code check
+                if (connection.getResponseCode() == 200) {
+                	this.logger.info("MiddleServer connected");
+                    this.connect = true;
+                }
             }
-        } catch (Exception err) {
-            this.errorCount++;
-            this.ctx.logger.error("ServerHandler.doUpdate> Unexpected error occur");
-            this.ctx.logger.error(err);
-            // TODO: alert to user
+        } catch (MalformedURLException err) {
+            this.handleMalformedURLException(err);
+        } catch (IOException err) {
+            if (err instanceof ConnectException) {
+            	if (this.connect) {
+            		this.logger.warn("disconnected from MiddleServer");
+            		this.connect = false;
+            	}
+            	return;
+            }
+            this.handleUnexpectedError(err);
+        } catch (JsonParseException err) {
+        	this.logger.warn("MiddleServer response invalid JSON");
+        	this.logger.warn(err);
         }
     }
 }
 
 class InternalLooper implements Runnable {
-    private KakaoMinecraftSynchronize ctx;
     private int interval;
 
-     InternalLooper (KakaoMinecraftSynchronize ctx, int interval) {
-        this.ctx = ctx;
+     InternalLooper (int interval) {
         this.interval = interval;
     }
 
     @Override
-    public void run () {
+    public void run() {
         while (true) {
-            if (ctx.serverHandler.getErrorCount() >= 5) {
-                ctx.logger.info("Update fail more then 5 times. Update disabled.");
+            if (KakaoMinecraftSynchronize.serverHandler.isMaxErrorCountReach()) {
               return;
             }
-            ctx.serverHandler.doUpdate();
+            KakaoMinecraftSynchronize.serverHandler.doUpdate();
             try { Thread.sleep(this.interval); } catch(InterruptedException e) { return; }
         }
     }
