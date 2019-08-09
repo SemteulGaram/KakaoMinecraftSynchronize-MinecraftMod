@@ -11,6 +11,6 @@ public class ConfigManager {
         public static String serverOrigin = "http://example.com:3000";
 
         @Config.Comment("Update interval (milliseconds)")
-        public static int interval = 1000;
+        public static int interval = 500;
     }
 }
