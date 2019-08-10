@@ -26,7 +26,7 @@ import org.apache.logging.log4j.Logger;
 public class KakaoMinecraftSynchronize {
     static final String MODID = "kakaominecraftsynchronize";
     static final String NAME = "KakaoMinecraftSynchronize";
-    static final String VERSION = "1.0";
+    static final String VERSION = "1.0.1";
 
     private static final String ORIGINAL_SERVER_ORIGIN = ConfigManager.KakaoMinecraftSynchronizeConfig.serverOrigin;
 
