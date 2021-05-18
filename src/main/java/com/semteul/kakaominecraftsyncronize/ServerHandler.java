@@ -7,8 +7,6 @@ import com.google.gson.JsonParser;
 
 import net.minecraft.util.text.TextFormatting;
 
-import org.apache.logging.log4j.Logger;
-
 import java.io.*;
 import java.net.ConnectException;
 import java.net.HttpURLConnection;
@@ -23,7 +21,6 @@ class ServerHandler {
     private static final ExecutorService SERVICE = Executors.newCachedThreadPool();
 
     private final KakaoMinecraftSynchronize ctx;
-    private final Logger logger;
     private final String cUrl;
     private final String uUrl;
     private final String mUrl;
@@ -35,28 +32,27 @@ class ServerHandler {
     private LinkedList<String> sendQueue = new LinkedList<String>();
 
     ServerHandler (KakaoMinecraftSynchronize ctx) {
-        this.logger = ctx.logger;
         this.ctx = ctx;
-        this.cUrl = ConfigManager.KakaoMinecraftSynchronizeConfig.serverOrigin + "/m/c";
-        this.uUrl = ConfigManager.KakaoMinecraftSynchronizeConfig.serverOrigin + "/m/u";
-        this.mUrl = ConfigManager.KakaoMinecraftSynchronizeConfig.serverOrigin + "/m/m";
+        this.cUrl = Config.relayServerAddress + "/m/c";
+        this.uUrl = Config.relayServerAddress + "/m/u";
+        this.mUrl = Config.relayServerAddress + "/m/m";
 
-        SERVICE.execute(new InternalLooper(ConfigManager.KakaoMinecraftSynchronizeConfig.interval));
+        SERVICE.execute(new InternalLooper(Config.updateInterval));
     }
     
     void handleUnexpectedError(Exception err) {
-    	this.logger.error("========== UNEXPECTED ERROR OCCUR ==========");
-    	this.logger.error(err);
+    	Logger.Log("========== UNEXPECTED ERROR OCCUR ==========");
+        Logger.Log(err.toString());
     	this.errorCount++;
     	if (this.isMaxErrorCountReach()) {
-    		this.logger.error("Unexpected error occur more then " 
+    		Logger.Log("Unexpected error occur more then "
     				+ this.MAX_ERROR_COUNT + " times. Service disabled.");
     	}
     }
     
     void handleMalformedURLException(Exception err) {
     	this.errorCount = this.MAX_ERROR_COUNT;
-    	this.logger.error("Malformed URL detected. Please change url in config (ex: http://example.com:3000)");
+        Logger.Log("Malformed URL detected. Please change url in config (ex: http://example.com:3000)");
     }
 
     int getErrorCount() {
@@ -108,7 +104,7 @@ class ServerHandler {
             // Response check
             int responseCode = connection.getResponseCode();
             if (responseCode != 200) {
-                this.logger.warn("ServerHandler.sendMessage> get wrong responseCode: " + responseCode
+                Logger.Log("ServerHandler.sendMessage> get wrong responseCode: " + responseCode
                         + ", Reason:" +  connection.getResponseMessage());
             }
         } catch (MalformedURLException err) {
@@ -148,7 +144,7 @@ class ServerHandler {
             // Response check
             int responseCode = connection.getResponseCode();
             if (responseCode != 200) {
-                this.logger.warn("ServerHandler.sendMessage> get wrong responseCode: " + responseCode
+                Logger.Log("ServerHandler.sendMessage> get wrong responseCode: " + responseCode
                         + ", Reason:" +  connection.getResponseMessage());
             }
         } catch (MalformedURLException err) {
@@ -204,7 +200,7 @@ class ServerHandler {
                         this.ctx.sendMessageAll(TextFormatting.YELLOW + m.get(i).getAsString());
                     }
                 } else {
-                	this.logger.warn("ServerHandler.doUpdate> get wrong responseCode: " + responseCode
+                    Logger.Log("ServerHandler.doUpdate> get wrong responseCode: " + responseCode
                             + ", Reason:" +  connection.getResponseMessage());
                 }
             // if last connection isn't connected
@@ -217,7 +213,7 @@ class ServerHandler {
                 
                 // Response code check
                 if (connection.getResponseCode() == 200) {
-                	this.logger.info("MiddleServer connected");
+                    Logger.Log("MiddleServer connected");
                     this.connect = true;
                 }
             }
@@ -226,15 +222,15 @@ class ServerHandler {
         } catch (IOException err) {
             if (err instanceof ConnectException) {
             	if (this.connect) {
-            		this.logger.warn("disconnected from MiddleServer");
+                    Logger.Log("disconnected from MiddleServer");
             		this.connect = false;
             	}
             	return;
             }
             this.handleUnexpectedError(err);
         } catch (JsonParseException err) {
-        	this.logger.warn("MiddleServer response invalid JSON");
-        	this.logger.warn(err);
+            Logger.Log("MiddleServer response invalid JSON");
+            Logger.Log(err.toString());
         }
     }
 }
