@@ -1,0 +1,1 @@
+Thanks to YaLTeR / MouseTweaks (https://github.com/YaLTeR/MouseTweaks) - code using for FML default structure (config, logger...)
